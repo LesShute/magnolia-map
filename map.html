@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Find Nearby Providers</title>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCWYDQ2ruxrrYSKZpwVUkI2uhSRjgb-6uU&libraries=geometry"></script>
+    <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+        #map { height: 500px; width: 100%; }
+        #controls {
+            background: white; padding: 15px; margin: 10px; border: 1px solid #ccc;
+            border-radius: 5px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            max-height: 400px; overflow-y: auto; width: 250px;
+        }
+        .control-section { margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #ddd; }
+        .control-section h4 { margin: 0 0 10px 0; color: #333; font-size: 14px; }
+        .checkbox-item { margin: 8px 0; display: flex; align-items: center; }
+        .color-indicator { width: 14px; height: 14px; border-radius: 50%; margin-right: 6px; border: 1px solid #666; }
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 16px; color: #333; background: white; padding: 20px;
+            border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); z-index: 1000;
+        }
+        .assign-btn {
+            background-color: #0066cc; color: white; border: none; padding: 8px 12px;
+            border-radius: 4px; cursor: pointer; font-size: 12px; margin-top: 8px; width: 100%;
+        }
+        .assign-btn:hover { background-color: #0052a3; }
+    </style>
+</head>
+<body>
+    <div id="loading">Initializing Map...</div>
+    <div id="map"></div>
+
+    <script>
+        // ** CONFIGURATION **
+        const DEFAULT_SEARCH_RADIUS = 25; // Miles
+        
+        // Service Colors
+        const SERVICE_COLORS = {
+            'DME': '#FF0000', 'Direct PT': '#4169E1', 'Contracted PT': '#4169E1',
+            'Physical Therapy': '#4169E1', 'Home Health': '#00AA00', 
+            'Diagnostic Imaging': '#FFD700', 'Field Nurse CM': '#800080'
+        };
+
+        // Global State
+        let map, patientMarker, allProviders = [], providerMarkers = [];
+        let currentReferral = {};
+        let patientLocation = null;
+        let currentRadius = DEFAULT_SEARCH_RADIUS;
+        let activeServiceTypes = new Set();
+
+        // 1. Initialize ZOHO SDK
+        ZOHO.embeddedApp.init().then(function(){
+            document.getElementById('loading').innerHTML = "Loading Referral Data...";
+            
+            // Get Current Record
+            ZOHO.embeddedApp.on("PageLoad", function(data){
+                if(data && data.EntityId){
+                    loadReferralData(data.EntityId);
+                }
+            });
+        });
+
+        // 2. Load Referral Data
+        async function loadReferralData(recordId) {
+            try {
+                const response = await ZOHO.CRM.API.getRecord({Entity: "Referrals", RecordID: recordId});
+                if(response.data && response.data.length > 0){
+                    currentReferral = response.data[0];
+                    initMap(); // Start Map Logic
+                }
+            } catch (e) {
+                console.error(e);
+                document.getElementById('loading').innerHTML = "Error loading data.";
+            }
+        }
+
+        // 3. Initialize Map & Logic
+        function initMap() {
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 27.9506, lng: -82.4572 }, zoom: 10,
+                mapTypeControl: false, streetViewControl: false
+            });
+
+            // Add Controls
+            const controls = createControlsPanel();
+            map.controls[google.maps.ControlPosition.LEFT_TOP].push(controls);
+
+            // Process Patient Location
+            plotPatientLocation();
+        }
+
+        function plotPatientLocation() {
+            // MAPPED FIELDS: Using "Claimant_Address_Street_1" from your CSV schema
+            const street = currentReferral.Claimant_Address_Street_1 || '';
+            const city = currentReferral.Claimant_Address_City || '';
+            const state = currentReferral.Claimant_Address_State || '';
+            const zip = currentReferral.Claimant_Address_Zip || '';
+            
+            const address = `${street}, ${city}, ${state} ${zip}`;
+            
+            if(address.length < 10) {
+                document.getElementById('loading').innerHTML = "Patient Address missing.";
+                return;
+            }
+
+            const geocoder = new google.maps.Geocoder();
+            geocoder.geocode({ 'address': address }, function(results, status) {
+                if (status === 'OK') {
+                    patientLocation = results[0].geometry.location;
+                    map.setCenter(patientLocation);
+                    
+                    // Patient Marker
+                    new google.maps.Marker({
+                        map: map, position: patientLocation,
+                        icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: 'blue', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
+                        title: "Patient Location"
+                    });
+
+                    // Now fetch Providers
+                    fetchProviders();
+                } else {
+                    document.getElementById('loading').innerHTML = "Could not geocode Patient Address.";
+                }
+            });
+        }
+
+        async function fetchProviders() {
+            document.getElementById('loading').innerHTML = "Fetching Providers...";
+            try {
+                // Fetch ALL providers
+                const response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 200});
+                if(response.data){
+                    allProviders = response.data;
+                    filterAndPlotProviders();
+                    createFilterCheckboxes(); // Update UI
+                    document.getElementById('loading').style.display = 'none';
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function filterAndPlotProviders() {
+            // Clear old markers
+            providerMarkers.forEach(m => m.setMap(null));
+            providerMarkers = [];
+
+            allProviders.forEach(provider => {
+                // FIELD MAPPING: Using "Provider_Contract_Status" from Schema
+                const status = provider.Provider_Contract_Status || '';
+                const type = provider.Service_Type || 'Default';
+                
+                // Basic Filter (Active Contract)
+                if(!['Active', 'Long Term Contract', 'SCA', 'Single Case Agreement'].includes(status)) return;
+
+                // Distance Filter & Plotting
+                // OPTIMIZATION: Check for stored Lat/Long first
+                const lat = provider.Provider_Latitude;
+                const lng = provider.Provider_Longitude;
+
+                if (lat && lng) {
+                    // Use stored coordinates (Fast)
+                    const pos = new google.maps.LatLng(lat, lng);
+                    checkDistanceAndPlot(pos, provider);
+                } else {
+                    // Fallback to Geocoding (Slow/Limited)
+                    // Only do this if absolutely necessary, effectively skipped to prevent rate limits in this demo
+                    // console.warn("Skipping provider without Lat/Long to save API quota:", provider.Name);
+                }
+            });
+        }
+
+        function checkDistanceAndPlot(providerPos, provider) {
+            const distanceMeters = google.maps.geometry.spherical.computeDistanceBetween(patientLocation, providerPos);
+            const distanceMiles = distanceMeters * 0.000621371;
+
+            if(distanceMiles <= currentRadius) {
+                const color = SERVICE_COLORS[provider.Service_Type] || 'gray';
+                
+                const marker = new google.maps.Marker({
+                    map: map, position: providerPos,
+                    icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 },
+                    title: provider.Name
+                });
+
+                // Info Window
+                const infoWindow = new google.maps.InfoWindow({
+                    content: `
+                        <div style="padding:5px; width:200px;">
+                            <strong>${provider.Name}</strong><br>
+                            <small>${provider.Service_Type}</small><br>
+                            <small>${distanceMiles.toFixed(1)} miles away</small><br>
+                            <button class="assign-btn" onclick="assignProvider('${provider.id}', '${provider.Name}')">Assign Provider</button>
+                        </div>
+                    `
+                });
+
+                marker.addListener('click', () => {
+                    infoWindow.open(map, marker);
+                });
+
+                providerMarkers.push(marker);
+            }
+        }
+
+        function assignProvider(id, name) {
+            // Logic to update the Referral Record
+            ZOHO.CRM.API.updateRecord({
+                Entity: "Referrals",
+                APIData: {
+                    "id": currentReferral.id,
+                    "Provider": id, // Lookup Field API Name
+                    "Status": "Vendor Assigned"
+                }
+            }).then(data => {
+                alert("Assigned " + name + " to this referral!");
+                location.reload();
+            });
+        }
+
+        function createControlsPanel() {
+            const div = document.createElement('div');
+            div.id = 'controls';
+            div.innerHTML = `
+                <h4>Radius: <span id="radVal">${currentRadius}</span> miles</h4>
+                <input type="range" min="5" max="100" value="${currentRadius}" onchange="updateRadius(this.value)">
+                <hr>
+                <div id="filters"></div>
+            `;
+            return div;
+        }
+
+        window.updateRadius = function(val) {
+            currentRadius = val;
+            document.getElementById('radVal').innerText = val;
+            filterAndPlotProviders();
+        }
+
+        function createFilterCheckboxes() {
+            // Dynamic checkbox generation logic here (simplified for brevity)
+        }
+    </script>
+</body>
+</html>
