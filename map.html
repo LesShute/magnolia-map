@@ -146,21 +146,21 @@
         }
 
         function plotPatientLocation() {
-            // Extract Address
+            // Extract Address using NEW STATE FIELD
             let rawStreet = currentReferral.Claimant_Address_Street_1;
             let rawCity = currentReferral.Claimant_Address_City;
-            let rawState = currentReferral.Claimant_Address_State;
-            let rawZip = currentReferral.Claimant_Address_Zip;
-
-            // Unwrap Picklist if needed
-            let state = "";
-            if (rawState && typeof rawState === 'object') {
-                state = rawState.display_value || rawState.actual_value || "";
-            } else {
-                state = rawState || "";
-            }
             
-            const fullAddress = `${rawStreet || ''}, ${rawCity || ''}, ${state} ${rawZip || ''}`;
+            // *** CHANGE: Use new 'Claimant_State' field instead of picklist ***
+            let rawState = currentReferral.Claimant_State; 
+            
+            let rawZip = currentReferral.Claimant_Address_Zip;
+            
+            const street = rawStreet || '';
+            const city = rawCity || '';
+            const state = rawState || ''; // Direct mapping (No unwrap needed)
+            const zip = rawZip || '';
+
+            const fullAddress = `${street}, ${city}, ${state} ${zip}`;
             
             // UPDATE UI "FROM" FIELD
             document.getElementById('fromAddress').value = fullAddress;
@@ -168,9 +168,13 @@
             console.log("Geocoding Patient: " + fullAddress);
 
             if (fullAddress.length < 10) {
-                document.getElementById('fromAddress').value = "Invalid Address (Using Default)";
+                document.getElementById('fromAddress').value = "Invalid/Missing Address";
+                
+                // Use Default Center (Venice, FL)
                 map.setCenter({lat: 27.09978, lng: -82.45426});
                 map.setZoom(8);
+                
+                // Fetch Providers anyway (Show all)
                 fetchAllProviders(); 
                 return;
             }
@@ -201,6 +205,7 @@
                     fetchAllProviders();
                 } else {
                     console.error("Geocode failed: " + status);
+                    document.getElementById('fromAddress').value = "Address Not Found by Google";
                     fetchAllProviders(); 
                 }
             });
