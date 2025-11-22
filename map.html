@@ -52,7 +52,7 @@
         let geocoder; 
 
         // ---------------------------------------------------------
-        // ** THE FIX: Start Listening BEFORE Initializing **
+        // ** STEP 1: Start Listening BEFORE Initializing **
         // ---------------------------------------------------------
         console.log("1. Script Started - Setting up Listeners...");
 
@@ -65,11 +65,13 @@
             }
         });
 
+        // ---------------------------------------------------------
+        // ** STEP 2: Initialize Connection **
+        // ---------------------------------------------------------
         console.log("2. Attempting Zoho Init...");
         
         ZOHO.embeddedApp.init().then(function(){
             console.log("4. Zoho Init Complete (Handshake Successful)");
-            // Just update UI here, don't rely on getting data inside this block
             document.getElementById('loading').innerHTML = "Loading Referral Data...";
         }).catch(function(err){
              console.error("Zoho Init Failed:", err);
@@ -83,7 +85,6 @@
         async function loadReferralData(recordId) {
             console.log("Fetching Record ID: " + recordId);
             try {
-                // Fetch the specific Referral Record
                 const response = await ZOHO.CRM.API.getRecord({Entity: "Referrals", RecordID: recordId});
                 if(response.data && response.data.length > 0){
                     currentReferral = response.data[0];
@@ -108,21 +109,46 @@
         }
 
         function plotPatientLocation() {
-            // Mapping fields based on your verified Schema
-            const street = currentReferral.Claimant_Address_Street_1 || '';
-            const city = currentReferral.Claimant_Address_City || '';
-            const state = currentReferral.Claimant_Address_State || '';
-            const zip = currentReferral.Claimant_Address_Zip || '';
+            // 1. Extract Raw Values using your confirmed API Names
+            let rawStreet = currentReferral.Claimant_Address_Street_1;
+            let rawCity = currentReferral.Claimant_Address_City;
+            let rawState = currentReferral.Claimant_Address_State;
+            let rawZip = currentReferral.Claimant_Address_Zip;
+
+            // 2. DEBUG: Log exactly what Zoho sent us to the Console
+            console.log("RAW ADDRESS DATA:", {
+                Street: rawStreet,
+                City: rawCity,
+                State: rawState,
+                Zip: rawZip
+            });
+
+            // 3. SAFE UNWRAPPING (The Picklist Fix)
+            // If State is an object (e.g. {display_value: "FL"}), extract the text.
+            let state = "";
+            if (rawState && typeof rawState === 'object') {
+                state = rawState.display_value || rawState.actual_value || "";
+            } else {
+                state = rawState || "";
+            }
+            
+            const street = rawStreet || '';
+            const city = rawCity || '';
+            const zip = rawZip || '';
+
+            // 4. Construct Address
             const fullAddress = `${street}, ${city}, ${state} ${zip}`;
+            console.log("Constructed Address for Geocoding: " + fullAddress);
 
-            console.log("Geocoding Patient Address: " + fullAddress);
-
-            if (fullAddress.length < 10) {
-                document.getElementById('loading').innerHTML = "Patient Address Incomplete.";
+            // 5. Validate
+            // We allow shorter addresses if at least Zip is present, but generally look for length
+            if (fullAddress.length < 5) {
+                console.error("Address is too short/empty.");
+                document.getElementById('loading').innerHTML = "Claimant Address Incomplete in Record.";
                 return;
             }
 
-            document.getElementById('loading').innerHTML = "Locating Patient...";
+            document.getElementById('loading').innerHTML = "Locating Claimant...";
             
             geocoder.geocode({ 'address': fullAddress }, function(results, status) {
                 if (status === 'OK') {
@@ -133,7 +159,7 @@
                     new google.maps.Marker({
                         map: map, position: patientLocation,
                         icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: 'blue', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
-                        title: "Patient"
+                        title: "Claimant"
                     });
 
                     // Add Radius Circle
@@ -141,7 +167,7 @@
                         strokeColor: "#0000FF", strokeOpacity: 0.3, strokeWeight: 1,
                         fillColor: "#0000FF", fillOpacity: 0.05,
                         map, center: patientLocation,
-                        radius: currentRadius * 1609.34 // Convert miles to meters
+                        radius: currentRadius * 1609.34
                     });
 
                     fetchProviders();
@@ -176,7 +202,6 @@
                 const provider = providers[i];
                 
                 // FILTER: Only Active Providers
-                // Adjust field name based on your schema check (Provider_Contract_Status vs Contract_Status)
                 const status = provider.Provider_Contract_Status || ''; 
                 
                 // Simple check for "Active" or "Contract" in status
@@ -194,7 +219,16 @@
                     const pCity = provider.Provider_Address_City || '';
                     const pState = provider.Provider_Address_State || '';
                     const pZip = provider.Provider_Address_Zip || '';
-                    const pAddress = `${pStreet}, ${pCity}, ${pState} ${pZip}`;
+                    
+                    // Safe unwrap for Provider State as well
+                    let pStateText = "";
+                    if (pState && typeof pState === 'object') {
+                        pStateText = pState.display_value || "";
+                    } else {
+                        pStateText = pState || "";
+                    }
+
+                    const pAddress = `${pStreet}, ${pCity}, ${pStateText} ${pZip}`;
 
                     if(pAddress.length > 10) {
                         // THROTTLE: Wait 300ms between requests to avoid 'OVER_QUERY_LIMIT'
@@ -247,13 +281,12 @@
                 Entity: "Referrals",
                 APIData: {
                     "id": currentReferral.id,
-                    "Provider": id, // Ensure this matches your Referral Lookup API Name
+                    "Provider": id, // Make sure this matches your Lookup Field API Name in Referrals
                     "Status": "Vendor Assigned"
                 }
             }).then(data => {
                 alert(name + " assigned successfully.");
-                // Optional: Refresh parent window
-                // ZOHO.CRM.UI.Resize({height:"500",width:"100%"}).then(function(data){});
+                location.reload();
             });
         }
     </script>
