@@ -1,133 +1,102 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Referral Routing - Forensic Mode</title>
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCWYDQ2ruxrrYSKZpwVUkI2uhSRjgb-6uU&libraries=geometry"></script>
+    <title>API Name Scanner</title>
     <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
-    
     <style>
-        body { margin: 0; padding: 0; font-family: 'Segoe UI', Arial, sans-serif; }
-        #routing-panel { background: #f8d7da; padding: 10px; border-bottom: 2px solid #dc3545; color: #721c24; font-size: 12px; }
-        #map { height: calc(100vh - 50px); width: 100%; }
-        #debug-controls { padding: 10px; background: white; border-bottom: 1px solid #ccc; }
+        body { font-family: monospace; padding: 20px; background: #f4f4f4; }
+        #scanner-box { 
+            background: white; 
+            border: 2px solid #333; 
+            padding: 20px; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+        h2 { border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+        .field-row { 
+            border-bottom: 1px solid #eee; 
+            padding: 5px 0; 
+            display: flex; 
+        }
+        .field-name { 
+            font-weight: bold; 
+            color: #0066cc; 
+            width: 40%; 
+        }
+        .field-value { 
+            color: #333; 
+            width: 60%; 
+            word-break: break-all; 
+        }
+        .highlight { background-color: #fff3cd; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <div id="routing-panel">
-        <strong>FORENSIC MODE ACTIVE:</strong> Check Console for "FULL RECORD DUMP".
+    <div id="scanner-box">
+        <h2>Record API Name Scanner</h2>
+        <div id="status">Connecting to Zoho...</div>
+        <hr>
+        <div id="field-list">Waiting for data...</div>
     </div>
-    <div id="debug-controls">
-        Status: <span id="status">Waiting...</span>
-        <button onclick="forceTestAddress()">Force Test Address (Venice, FL)</button>
-    </div>
-
-    <div id="map"></div>
 
     <script>
-        const SEARCH_RADIUS_LIMIT = 100; 
-        const SERVICE_COLORS = { 'DME': '#FF0000', 'Direct PT': '#4169E1', 'Contracted PT': '#4169E1', 'Physical Therapy': '#4169E1', 'Home Health': '#00AA00', 'Diagnostic Imaging': '#FFD700', 'Field Nurse CM': '#800080' };
-
-        let map, patientLocation, currentReferral = {}, geocoder, bounds;
-
-        // 1. LISTEN
         ZOHO.embeddedApp.on("PageLoad", function(data){
-            if(data && data.EntityId) loadReferralData(data.EntityId);
+            if(data && data.EntityId){
+                fetchData(data.EntityId);
+            }
         });
 
-        // 2. INIT
         ZOHO.embeddedApp.init().then(function(){
-            document.getElementById('status').innerText = "Zoho Connected. Loading Data...";
+            console.log("Init successful");
         });
 
-        async function loadReferralData(recordId) {
+        async function fetchData(id) {
+            document.getElementById('status').innerText = "Fetching Record ID: " + id;
+            
             try {
-                const response = await ZOHO.CRM.API.getRecord({Entity: "Referrals", RecordID: recordId});
-                if(response.data && response.data.length > 0){
-                    currentReferral = response.data[0];
-                    
-                    // *** THE SMOKING GUN: PRINT EVERYTHING ***
-                    console.log("%c [DIAGNOSTIC] FULL RECORD DUMP: ", "background: #222; color: #bada55", currentReferral);
-                    
-                    initMap();
+                const response = await ZOHO.CRM.API.getRecord({Entity: "Referrals", RecordID: id});
+                
+                if(response.data && response.data.length > 0) {
+                    const record = response.data[0];
+                    document.getElementById('status').innerText = "Data Loaded. Scrolling for Address fields...";
+                    renderFields(record);
                 }
             } catch (e) {
-                console.error(e);
-                document.getElementById('status').innerText = "Error: " + e.message;
+                document.getElementById('status').innerText = "Error: " + JSON.stringify(e);
             }
         }
 
-        function initMap() {
-            geocoder = new google.maps.Geocoder();
-            bounds = new google.maps.LatLngBounds();
-            map = new google.maps.Map(document.getElementById('map'), { center: { lat: 27.099, lng: -82.454 }, zoom: 4 });
-            plotPatientLocation();
-        }
-
-        function plotPatientLocation() {
-            // PULLING FIELDS - CHECK THESE AGAINST CONSOLE DUMP
-            // Using the NEW text field you created:
-            let rawStreet = currentReferral.Claimant_Address_Street_1;
-            let rawCity = currentReferral.Claimant_Address_City;
-            let rawState = currentReferral.Claimant_State; // <--- VERIFY THIS NAME IN CONSOLE
-            let rawZip = currentReferral.Claimant_Address_Zip;
-
-            console.log("EXTRACTED VALUES:", { rawStreet, rawCity, rawState, rawZip });
-
-            // Construct
-            const fullAddress = `${rawStreet || ''}, ${rawCity || ''}, ${rawState || ''} ${rawZip || ''}`;
+        function renderFields(record) {
+            const list = document.getElementById('field-list');
+            list.innerHTML = ""; // Clear
             
-            if (fullAddress.length < 8 || !rawStreet) {
-                console.error("Address invalid: " + fullAddress);
-                document.getElementById('status').innerText = "Address Invalid: '" + fullAddress + "'";
-                return;
-            }
+            // Sort keys alphabetically to make it easier to find "C"
+            const keys = Object.keys(record).sort();
 
-            geocodeAndPlot(fullAddress);
-        }
-
-        function geocodeAndPlot(address) {
-            document.getElementById('status').innerText = "Geocoding: " + address;
-            geocoder.geocode({ 'address': address }, function(results, status) {
-                if (status === 'OK') {
-                    patientLocation = results[0].geometry.location;
-                    new google.maps.Marker({ map: map, position: patientLocation, title: "Claimant" });
-                    map.setCenter(patientLocation);
-                    map.setZoom(10);
-                    document.getElementById('status').innerText = "Located: " + address;
-                    
-                    // Now fetch providers
-                    fetchAllProviders();
-                } else {
-                    console.error("Geocode Failed: " + status);
-                    document.getElementById('status').innerText = "Google Rejected: " + status;
+            keys.forEach(key => {
+                let val = record[key];
+                
+                // Handle objects (like Picklists)
+                if (val && typeof val === 'object') {
+                    val = JSON.stringify(val);
                 }
-            });
-        }
 
-        // DEBUG BUTTON
-        window.forceTestAddress = function() {
-            geocodeAndPlot("606 Vistera Blvd, Venice, FL 34275");
-        }
-
-        async function fetchAllProviders() {
-             // ... (Standard fetch logic we verified works) ...
-             // Minimized for diagnostic clarity
-             document.getElementById('status').innerText += " | Fetching Providers...";
-             let response = await ZOHO.CRM.API.getAllRecords({ Entity: "Sole_Clinicians", sort_order: "asc", per_page: 200 });
-             if(response.data) processProviders(response.data);
-        }
-
-        function processProviders(providers) {
-            // Simple plot
-            providers.forEach(p => {
-                if(p.Provider_Latitude && p.Provider_Longitude) {
-                    let pos = { lat: parseFloat(p.Provider_Latitude), lng: parseFloat(p.Provider_Longitude) };
-                    new google.maps.Marker({ map: map, position: pos, icon: { path: google.maps.SymbolPath.CIRCLE, scale: 5, fillColor: 'red', fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 } });
-                    bounds.extend(pos);
+                const row = document.createElement('div');
+                row.className = "field-row";
+                
+                // Highlight potential address fields
+                if(key.includes("State") || key.includes("Street") || key.includes("Address")) {
+                    row.classList.add("highlight");
                 }
+
+                row.innerHTML = `
+                    <div class="field-name">${key}</div>
+                    <div class="field-value">${val}</div>
+                `;
+                list.appendChild(row);
             });
-            if(!bounds.isEmpty()) map.fitBounds(bounds);
         }
     </script>
 </body>
