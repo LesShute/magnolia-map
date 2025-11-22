@@ -93,40 +93,62 @@
         }
 
         function plotPatientLocation() {
-            // 1. CASCADE CHECK FOR STREET (Try all common variations)
-            let rawStreet = currentReferral.Claimant_Address_Street_1 || 
-                            currentReferral.Claimant_Address_Street || 
-                            currentReferral.Street || 
-                            currentReferral.Mailing_Street || 
-                            "";
+            // ** FUZZY FINDER: Scan keys dynamically for "Claimant" and "Street" **
+            let rawStreet = "";
+            let rawCity = currentReferral.Claimant_City || "";
+            let rawZip = currentReferral.Claimant_Address_Zip || "";
+            let rawState = currentReferral.Claimant_Address_State;
 
-            let rawCity   = currentReferral.Claimant_City || "";
-            let rawZip    = currentReferral.Claimant_Address_Zip || "";
-            
-            // Safe State Unwrap
-            let rawStateVal = currentReferral.Claimant_Address_State;
-            let rawState = (rawStateVal && typeof rawStateVal === 'object') ? rawStateVal.display_value : (rawStateVal || "");
-
-            // 2. CONSTRUCT ADDRESSES
-            const fullAddress = `${rawStreet}, ${rawCity}, ${rawState} ${rawZip}`.trim();
-            const fallbackAddress = `${rawCity}, ${rawState} ${rawZip}`.trim();
-
-            // UPDATE UI
-            if(rawStreet) {
-                document.getElementById('fromAddress').value = fullAddress;
-            } else {
-                document.getElementById('fromAddress').value = fallbackAddress + " (Street Missing)";
+            // 1. Try Exact Match First
+            if(currentReferral.Claimant_Address_Street_1) {
+                rawStreet = currentReferral.Claimant_Address_Street_1;
+                console.log("Found Exact Match: Claimant_Address_Street_1");
+            } 
+            // 2. Try Fuzzy Search
+            else {
+                for (let key in currentReferral) {
+                    // Look for keys containing "Claimant" AND "Street" (Case Insensitive)
+                    if (key.toLowerCase().includes("claimant") && key.toLowerCase().includes("street")) {
+                        if(currentReferral[key]) {
+                            rawStreet = currentReferral[key];
+                            console.log("Fuzzy Match Found: " + key + " = " + rawStreet);
+                            break;
+                        }
+                    }
+                }
             }
 
-            // 3. LOGIC: TRY FULL -> FAIL -> TRY CITY -> FAIL -> DEFAULT
+            // Safe State Unwrap
+            let state = "";
+            if (rawState && typeof rawState === 'object') {
+                state = rawState.display_value || rawState.actual_value || "";
+            } else {
+                state = rawState || "";
+            }
+
+            // 3. Construct
+            const fullAddress = `${rawStreet}, ${rawCity}, ${state} ${rawZip}`.replace(/^,/, '').trim();
+            const fallbackAddress = `${rawCity}, ${state} ${rawZip}`.trim();
+
+            // 4. UPDATE UI (Always show what we found)
+            if(rawStreet.length > 0) {
+                document.getElementById('fromAddress').value = fullAddress;
+            } else {
+                document.getElementById('fromAddress').value = fallbackAddress + " (Street Missing in Data)";
+            }
+
+            console.log("Geocoding: " + fullAddress);
+
+            // 5. GEOCODE LOGIC
             if (fullAddress.length > 10 && rawStreet.length > 0) {
-                // TRY 1: Full Address
-                console.log("Attempting Full Address: " + fullAddress);
                 geocoder.geocode({ 'address': fullAddress }, function(results, status) {
                     if (status === 'OK') {
                         plotAndFinish(results[0].geometry.location);
                     } else {
                         console.warn("Full Address Failed (" + status + "). Retrying Fallback...");
+                        
+                        // Don't wipe the UI text! Keep the street visible so they know it failed.
+                        document.getElementById('fromAddress').value = fullAddress + " [Approximate Location]";
                         tryFallback(fallbackAddress);
                     }
                 });
@@ -138,11 +160,9 @@
 
         function tryFallback(address) {
             if(address.length < 5) {
-                console.error("Fallback Address too short.");
                 useDefaultCenter();
                 return;
             }
-            
             console.log("Attempting Fallback: " + address);
             geocoder.geocode({ 'address': address }, function(results, status) {
                 if (status === 'OK') {
@@ -155,7 +175,6 @@
         }
 
         function useDefaultCenter() {
-            document.getElementById('fromAddress').value += " [Not Found]";
             map.setCenter({lat: 27.09978, lng: -82.45426});
             map.setZoom(8);
             fetchAllProviders();
@@ -171,7 +190,6 @@
             bounds.extend(patientLocation);
             map.fitBounds(bounds);
             
-            // 100 Mile Circle
             new google.maps.Circle({
                 strokeColor: "#007bff", strokeOpacity: 0.3, strokeWeight: 1, fillColor: "#007bff", fillOpacity: 0.05,
                 map, center: patientLocation, radius: SEARCH_RADIUS_LIMIT * 1609.34
@@ -213,6 +231,7 @@
             let plottedCount = 0;
             for (let i = 0; i < providers.length; i++) {
                 const provider = providers[i];
+                // Using Lat/Long only
                 if (provider.Provider_Latitude && provider.Provider_Longitude) {
                     const lat = parseFloat(provider.Provider_Latitude);
                     const lng = parseFloat(provider.Provider_Longitude);
