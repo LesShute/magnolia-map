@@ -26,9 +26,9 @@
         }
 
         /* POPUP STYLES */
-        .popup-content { width: 240px; }
+        .popup-content { width: 260px; }
         .popup-title { font-size: 16px; font-weight: bold; color: #2c3e50; margin-bottom: 5px; }
-        .popup-detail { font-size: 13px; color: #555; margin-bottom: 3px; }
+        .popup-detail { font-size: 13px; color: #555; margin-bottom: 4px; }
         .popup-tag { display: inline-block; padding: 2px 6px; background: #e1f5fe; color: #0277bd; border-radius: 4px; font-size: 11px; margin-bottom: 8px; }
         
         .btn-select { background-color: #28a745; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%; margin-top: 5px; }
@@ -93,82 +93,51 @@
         }
 
         function plotPatientLocation() {
-            // ** FUZZY FINDER: Scan keys dynamically for "Claimant" and "Street" **
-            let rawStreet = "";
-            let rawCity = currentReferral.Claimant_City || "";
-            let rawZip = currentReferral.Claimant_Address_Zip || "";
-            let rawState = currentReferral.Claimant_Address_State;
+            // CASCADE CHECK FOR STREET
+            let rawStreet = currentReferral.Claimant_Address_Street_1 || 
+                            currentReferral.Claimant_Address_Street || 
+                            currentReferral.Street || 
+                            currentReferral.Mailing_Street || 
+                            "";
 
-            // 1. Try Exact Match First
-            if(currentReferral.Claimant_Address_Street_1) {
-                rawStreet = currentReferral.Claimant_Address_Street_1;
-                console.log("Found Exact Match: Claimant_Address_Street_1");
-            } 
-            // 2. Try Fuzzy Search
-            else {
-                for (let key in currentReferral) {
-                    // Look for keys containing "Claimant" AND "Street" (Case Insensitive)
-                    if (key.toLowerCase().includes("claimant") && key.toLowerCase().includes("street")) {
-                        if(currentReferral[key]) {
-                            rawStreet = currentReferral[key];
-                            console.log("Fuzzy Match Found: " + key + " = " + rawStreet);
-                            break;
-                        }
-                    }
-                }
-            }
-
+            let rawCity   = currentReferral.Claimant_City || "";
+            let rawZip    = currentReferral.Claimant_Address_Zip || "";
+            
             // Safe State Unwrap
-            let state = "";
-            if (rawState && typeof rawState === 'object') {
-                state = rawState.display_value || rawState.actual_value || "";
-            } else {
-                state = rawState || "";
-            }
+            let rawStateVal = currentReferral.Claimant_Address_State;
+            let rawState = (rawStateVal && typeof rawStateVal === 'object') ? rawStateVal.display_value : (rawStateVal || "");
 
-            // 3. Construct
-            const fullAddress = `${rawStreet}, ${rawCity}, ${state} ${rawZip}`.replace(/^,/, '').trim();
-            const fallbackAddress = `${rawCity}, ${state} ${rawZip}`.trim();
+            const fullAddress = `${rawStreet}, ${rawCity}, ${rawState} ${rawZip}`.replace(/^,/, '').trim();
+            const fallbackAddress = `${rawCity}, ${rawState} ${rawZip}`.trim();
 
-            // 4. UPDATE UI (Always show what we found)
-            if(rawStreet.length > 0) {
+            if(rawStreet) {
                 document.getElementById('fromAddress').value = fullAddress;
             } else {
                 document.getElementById('fromAddress').value = fallbackAddress + " (Street Missing in Data)";
             }
 
-            console.log("Geocoding: " + fullAddress);
-
-            // 5. GEOCODE LOGIC
+            // GEOCODE LOGIC
             if (fullAddress.length > 10 && rawStreet.length > 0) {
                 geocoder.geocode({ 'address': fullAddress }, function(results, status) {
                     if (status === 'OK') {
                         plotAndFinish(results[0].geometry.location);
                     } else {
-                        console.warn("Full Address Failed (" + status + "). Retrying Fallback...");
-                        
-                        // Don't wipe the UI text! Keep the street visible so they know it failed.
-                        document.getElementById('fromAddress').value = fullAddress + " [Approximate Location]";
+                        console.warn("Full Address Failed. Retrying Fallback...");
                         tryFallback(fallbackAddress);
                     }
                 });
             } else {
-                console.warn("Street empty or too short. Skipping to Fallback.");
+                console.warn("Street empty. Skipping to Fallback.");
                 tryFallback(fallbackAddress);
             }
         }
 
         function tryFallback(address) {
-            if(address.length < 5) {
-                useDefaultCenter();
-                return;
-            }
-            console.log("Attempting Fallback: " + address);
+            if(address.length < 5) { useDefaultCenter(); return; }
             geocoder.geocode({ 'address': address }, function(results, status) {
                 if (status === 'OK') {
                     plotAndFinish(results[0].geometry.location);
                 } else {
-                    console.error("Fallback Failed: " + status);
                     useDefaultCenter();
                 }
             });
@@ -206,7 +175,7 @@
 
             try {
                 while(hasMore) {
-                    // USING 'Sole_Clinicians'
+                    // Fetching from 'Sole_Clinicians'
                     let response = await ZOHO.CRM.API.getAllRecords({ Entity: "Sole_Clinicians", sort_order: "asc", per_page: 200, page: page });
 
                     if(response.data && response.data.length > 0){
@@ -231,7 +200,6 @@
             let plottedCount = 0;
             for (let i = 0; i < providers.length; i++) {
                 const provider = providers[i];
-                // Using Lat/Long only
                 if (provider.Provider_Latitude && provider.Provider_Longitude) {
                     const lat = parseFloat(provider.Provider_Latitude);
                     const lng = parseFloat(provider.Provider_Longitude);
@@ -264,7 +232,7 @@
             const serviceType = provider.Provider_Service_Type || 'General';
             const color = SERVICE_COLORS[serviceType] || 'gray';
             
-            // Address Build
+            // ** 1. PROVIDER DETAILS **
             const street = provider.Provider_Address_Street_1 || '';
             const city = provider.Provider_Address_City || '';
             const pStateRaw = provider.Provider_Address_State;
@@ -272,30 +240,44 @@
             const fullAddress = `${street}, ${city}, ${pState}`;
             const phone = provider.Provider_Phone || 'N/A';
 
+            // ** 2. NAME SWAP (Use Location Name if available) **
+            const displayName = provider.Provider_Location_Name || provider.Name;
+            
+            // ** 3. CONDITIONAL RATE ROW (PT Only) **
+            let rateRow = "";
+            if(serviceType.includes("PT") || serviceType.includes("Physical Therapy")) {
+                const maxRate = provider.Max_PT_Visit_Rate || "N/A";
+                rateRow = `<div class="popup-detail"><strong>Max Rate:</strong> ${maxRate}</div>`;
+            }
+
             const marker = new google.maps.Marker({
                 map: map, position: pos,
                 icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 },
-                title: provider.Name
+                title: displayName
             });
             bounds.extend(pos);
 
+            // ** 4. POPUP CONTENT **
             const contentString = `
                 <div class="popup-content">
-                    <div class="popup-title">${provider.Name}</div>
+                    <div class="popup-title">${displayName}</div>
                     <span class="popup-tag">${serviceType}</span>
                     <div class="popup-detail"><strong>Dist:</strong> ${distance.toFixed(1)} miles</div>
                     <div class="popup-detail"><strong>Addr:</strong> ${fullAddress}</div>
                     <div class="popup-detail"><strong>Ph:</strong> ${phone}</div>
+                    ${rateRow}
                     <hr style="margin: 8px 0; border: 0; border-top: 1px solid #eee;">
                     <button class="btn-select" onclick="selectProvider('${fullAddress.replace(/'/g, "\\'")}')">Select for Route</button>
-                    <button class="btn-assign" onclick="assignProvider('${provider.id}', '${provider.Name.replace(/'/g, "\\'")}')">Assign to Referral</button>
+                    <button class="btn-assign" onclick="assignProvider('${provider.id}', '${displayName.replace(/'/g, "\\'")}')">Assign to Referral</button>
                 </div>
             `;
+            
             const infoWindow = new google.maps.InfoWindow({ content: contentString });
             marker.addListener('click', () => { infoWindow.open(map, marker); });
         }
 
         window.selectProvider = function(address) { document.getElementById('toAddress').value = address; };
+        
         window.assignProvider = function(id, name) {
             if(confirm("Confirm assignment of " + name + "?")) {
                 ZOHO.CRM.API.updateRecord({
