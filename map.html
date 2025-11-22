@@ -9,11 +9,6 @@
     <style>
         body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
         #map { height: 500px; width: 100%; }
-        #controls {
-            background: white; padding: 15px; margin: 10px; border: 1px solid #ccc;
-            border-radius: 5px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-            max-height: 400px; overflow-y: auto; width: 250px;
-        }
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             font-size: 16px; color: #333; background: white; padding: 20px;
@@ -32,12 +27,6 @@
 
     <script>
         // ** CONFIGURATION **
-        const DEFAULT_SEARCH_RADIUS = 50; // Miles
-        
-        // FALLBACK LOCATION (Venice, FL) - Used if Claimant Address Fails
-        const FALLBACK_LAT = 27.09978;
-        const FALLBACK_LNG = -82.45426;
-
         const SERVICE_COLORS = {
             'DME': '#FF0000', 
             'Direct PT': '#4169E1', 
@@ -51,8 +40,8 @@
         // Global State
         let map, patientLocation = null;
         let currentReferral = {};
-        let currentRadius = DEFAULT_SEARCH_RADIUS;
         let geocoder; 
+        let bounds; // For Auto-Zoom
 
         // ---------------------------------------------------------
         // ** STEP 1: Start Listening **
@@ -98,7 +87,8 @@
 
         function initMap() {
             geocoder = new google.maps.Geocoder();
-            // Default center US
+            bounds = new google.maps.LatLngBounds(); // Initialize Bounds
+
             map = new google.maps.Map(document.getElementById('map'), {
                 center: { lat: 37.0902, lng: -95.7129 }, 
                 zoom: 4,
@@ -115,15 +105,7 @@
             let rawState = currentReferral.Claimant_Address_State;
             let rawZip = currentReferral.Claimant_Address_Zip;
 
-            // 2. DEBUG LOG - CHECK CONSOLE FOR THIS
-            console.log("RAW ADDRESS DATA:", {
-                Street: rawStreet,
-                City: rawCity,
-                State: rawState,
-                Zip: rawZip
-            });
-
-            // 3. SAFE UNWRAP
+            // 2. SAFE UNWRAP (State Picklist Fix)
             let state = "";
             if (rawState && typeof rawState === 'object') {
                 state = rawState.display_value || rawState.actual_value || "";
@@ -136,10 +118,14 @@
             const zip = rawZip || '';
             const fullAddress = `${street}, ${city}, ${state} ${zip}`;
 
-            // 4. VALIDATE & FALLBACK LOGIC
+            console.log("Geocoding Patient: " + fullAddress);
+
             if (fullAddress.length < 10) {
-                console.error("Address Incomplete. Using Fallback.");
-                useFallbackLocation("Claimant Address Incomplete/Empty.");
+                console.warn("Address too short. Using Default Center.");
+                // Even if patient fails, we load map to show providers (if any)
+                map.setCenter({lat: 27.09978, lng: -82.45426}); // Venice FL default
+                map.setZoom(8);
+                fetchProviders();
                 return;
             }
 
@@ -148,51 +134,35 @@
             geocoder.geocode({ 'address': fullAddress }, function(results, status) {
                 if (status === 'OK') {
                     patientLocation = results[0].geometry.location;
-                    map.setCenter(patientLocation);
-                    map.setZoom(10);
                     
+                    // Plot Patient
                     new google.maps.Marker({
                         map: map, position: patientLocation,
                         icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: 'blue', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
                         title: "Claimant"
                     });
 
-                    // Proceed to Providers
+                    // Add Patient to Bounds so we don't lose them
+                    bounds.extend(patientLocation);
+                    map.fitBounds(bounds);
+
                     fetchProviders();
                 } else {
                     console.error("Geocode failed: " + status);
-                    useFallbackLocation("Geocoding Failed: " + status);
+                    document.getElementById('loading').innerHTML = "Patient Geocode Failed. Fetching Providers anyway...";
+                    fetchProviders(); // Proceed even if patient fails
                 }
             });
-        }
-
-        function useFallbackLocation(reason) {
-            console.warn("Using Fallback Location (Venice, FL). Reason: " + reason);
-            
-            // Set "Patient" location to Venice HQ for calculation purposes
-            patientLocation = new google.maps.LatLng(FALLBACK_LAT, FALLBACK_LNG);
-            
-            map.setCenter(patientLocation);
-            map.setZoom(9);
-            
-            // Mark the Fallback Center differently (Grey) so you know it's not the patient
-            new google.maps.Marker({
-                map: map, position: patientLocation,
-                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 8, fillColor: 'gray', fillOpacity: 0.5, strokeColor: 'black', strokeWeight: 1 },
-                title: "Default Center (Venice, FL) - " + reason
-            });
-
-            // Proceed to Providers anyway!
-            fetchProviders();
         }
 
         async function fetchProviders() {
             document.getElementById('loading').innerHTML = "Fetching Providers...";
             
             try {
-                const response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 100});
+                // Fetch Providers (increased limit to 200 to ensure we catch test data)
+                const response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 200});
                 if(response.data){
-                    console.log("Providers Fetched: " + response.data.length);
+                    console.log("Providers Fetched from CRM: " + response.data.length);
                     processProviders(response.data);
                 } else {
                      document.getElementById('loading').style.display = 'none';
@@ -202,86 +172,65 @@
             }
         }
 
-        async function processProviders(providers) {
+        function processProviders(providers) {
             let plottedCount = 0;
 
             for (let i = 0; i < providers.length; i++) {
                 const provider = providers[i];
                 
-                // FILTER: Only Active Providers
-                const status = provider.Provider_Contract_Status || ''; 
-                if(!status.includes('Active') && !status.includes('Contract') && !status.includes('SCA')) continue;
-
-                // STRATEGY 1: Use Stored Coordinates (Fast)
+                // 1. FILTER REMOVED: We ignore Status now.
+                // const status = provider.Provider_Contract_Status || ''; 
+                
+                // 2. LAT/LONG CHECK ONLY
+                // We strictly ignore addresses. Only plot if coords exist.
                 if (provider.Provider_Latitude && provider.Provider_Longitude) {
-                    const pos = new google.maps.LatLng(provider.Provider_Latitude, provider.Provider_Longitude);
-                    checkAndPlot(pos, provider);
-                    plottedCount++;
-                } 
-                // STRATEGY 2: Geocode Address (Fallback - Slow)
-                else {
-                    const pStreet = provider.Provider_Address_Street_1 || '';
-                    const pCity = provider.Provider_Address_City || '';
-                    const pState = provider.Provider_Address_State || '';
-                    const pZip = provider.Provider_Address_Zip || '';
                     
-                    // Safe unwrap for Provider State
-                    let pStateText = "";
-                    if (pState && typeof pState === 'object') {
-                        pStateText = pState.display_value || "";
-                    } else {
-                        pStateText = pState || "";
+                    const lat = parseFloat(provider.Provider_Latitude);
+                    const lng = parseFloat(provider.Provider_Longitude);
+                    
+                    // Basic sanity check for valid coords
+                    if(!isNaN(lat) && !isNaN(lng)) {
+                        const pos = new google.maps.LatLng(lat, lng);
+                        plotProviderPin(pos, provider);
+                        plottedCount++;
                     }
-
-                    const pAddress = `${pStreet}, ${pCity}, ${pStateText} ${pZip}`;
-
-                    if(pAddress.length > 10) {
-                        // THROTTLE
-                        await new Promise(r => setTimeout(r, 300)); 
-                        geocoder.geocode({ 'address': pAddress }, function(results, status) {
-                            if (status === 'OK') {
-                                checkAndPlot(results[0].geometry.location, provider);
-                            }
-                        });
-                    }
-                }
+                } 
             }
+            
             document.getElementById('loading').style.display = 'none';
-            console.log("Total Providers Plotted: " + plottedCount);
+            console.log("Total Pins Plotted: " + plottedCount);
+            
+            // Final Zoom Adjust
+            if(plottedCount > 0) {
+                map.fitBounds(bounds);
+            }
         }
 
-        function checkAndPlot(pos, provider) {
-            // Calculate Distance
-            const distanceMeters = google.maps.geometry.spherical.computeDistanceBetween(patientLocation, pos);
-            const distanceMiles = distanceMeters * 0.000621371;
+        function plotProviderPin(pos, provider) {
+            const color = SERVICE_COLORS[provider.Service_Type] || 'gray';
+            
+            const marker = new google.maps.Marker({
+                map: map, position: pos,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 },
+                title: provider.Name
+            });
 
-            // Show if within radius OR if we are using fallback (show everything under 200 miles)
-            const limit = (patientLocation.lat() === FALLBACK_LAT) ? 200 : currentRadius;
+            // Add to Bounds (Auto-Zoom)
+            bounds.extend(pos);
 
-            if(distanceMiles <= limit) {
-                const color = SERVICE_COLORS[provider.Service_Type] || 'gray';
-                
-                const marker = new google.maps.Marker({
-                    map: map, position: pos,
-                    icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 },
-                    title: provider.Name
-                });
+            const infoWindow = new google.maps.InfoWindow({
+                content: `
+                    <div style="padding:5px; width:200px; font-family:Arial;">
+                        <strong>${provider.Name}</strong><br>
+                        <span style="color:#666; font-size:12px;">${provider.Service_Type}</span><br>
+                        <button class="assign-btn" onclick="assignProvider('${provider.id}', '${provider.Name}')">Assign Provider</button>
+                    </div>
+                `
+            });
 
-                const infoWindow = new google.maps.InfoWindow({
-                    content: `
-                        <div style="padding:5px; width:200px; font-family:Arial;">
-                            <strong>${provider.Name}</strong><br>
-                            <span style="color:#666; font-size:12px;">${provider.Service_Type}</span><br>
-                            <span style="font-weight:bold; color:#333;">${distanceMiles.toFixed(1)} miles</span><br>
-                            <button class="assign-btn" onclick="assignProvider('${provider.id}', '${provider.Name}')">Assign Provider</button>
-                        </div>
-                    `
-                });
-
-                marker.addListener('click', () => {
-                    infoWindow.open(map, marker);
-                });
-            }
+            marker.addListener('click', () => {
+                infoWindow.open(map, marker);
+            });
         }
 
         function assignProvider(id, name) {
