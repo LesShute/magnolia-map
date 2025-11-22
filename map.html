@@ -34,6 +34,10 @@
         // ** CONFIGURATION **
         const DEFAULT_SEARCH_RADIUS = 50; // Miles
         
+        // FALLBACK LOCATION (Venice, FL) - Used if Claimant Address Fails
+        const FALLBACK_LAT = 27.09978;
+        const FALLBACK_LNG = -82.45426;
+
         const SERVICE_COLORS = {
             'DME': '#FF0000', 
             'Direct PT': '#4169E1', 
@@ -46,13 +50,12 @@
 
         // Global State
         let map, patientLocation = null;
-        let providerMarkers = [];
         let currentReferral = {};
         let currentRadius = DEFAULT_SEARCH_RADIUS;
         let geocoder; 
 
         // ---------------------------------------------------------
-        // ** STEP 1: Start Listening BEFORE Initializing **
+        // ** STEP 1: Start Listening **
         // ---------------------------------------------------------
         console.log("1. Script Started - Setting up Listeners...");
 
@@ -60,8 +63,6 @@
             console.log("3. PageLoad Event Received!", data);
             if(data && data.EntityId){
                 loadReferralData(data.EntityId);
-            } else {
-                console.warn("PageLoad fired but no EntityId found.");
             }
         });
 
@@ -71,7 +72,7 @@
         console.log("2. Attempting Zoho Init...");
         
         ZOHO.embeddedApp.init().then(function(){
-            console.log("4. Zoho Init Complete (Handshake Successful)");
+            console.log("4. Zoho Init Complete");
             document.getElementById('loading').innerHTML = "Loading Referral Data...";
         }).catch(function(err){
              console.error("Zoho Init Failed:", err);
@@ -83,12 +84,10 @@
         // ---------------------------------------------------------
 
         async function loadReferralData(recordId) {
-            console.log("Fetching Record ID: " + recordId);
             try {
                 const response = await ZOHO.CRM.API.getRecord({Entity: "Referrals", RecordID: recordId});
                 if(response.data && response.data.length > 0){
                     currentReferral = response.data[0];
-                    console.log("Referral Data Loaded:", currentReferral);
                     initMap();
                 }
             } catch (e) {
@@ -99,8 +98,9 @@
 
         function initMap() {
             geocoder = new google.maps.Geocoder();
+            // Default center US
             map = new google.maps.Map(document.getElementById('map'), {
-                center: { lat: 37.0902, lng: -95.7129 }, // Center of US default
+                center: { lat: 37.0902, lng: -95.7129 }, 
                 zoom: 4,
                 mapTypeControl: false, streetViewControl: false
             });
@@ -109,13 +109,13 @@
         }
 
         function plotPatientLocation() {
-            // 1. Extract Raw Values using your confirmed API Names
+            // 1. Extract Raw Values
             let rawStreet = currentReferral.Claimant_Address_Street_1;
             let rawCity = currentReferral.Claimant_Address_City;
             let rawState = currentReferral.Claimant_Address_State;
             let rawZip = currentReferral.Claimant_Address_Zip;
 
-            // 2. DEBUG: Log exactly what Zoho sent us to the Console
+            // 2. DEBUG LOG - CHECK CONSOLE FOR THIS
             console.log("RAW ADDRESS DATA:", {
                 Street: rawStreet,
                 City: rawCity,
@@ -123,8 +123,7 @@
                 Zip: rawZip
             });
 
-            // 3. SAFE UNWRAPPING (The Picklist Fix)
-            // If State is an object (e.g. {display_value: "FL"}), extract the text.
+            // 3. SAFE UNWRAP
             let state = "";
             if (rawState && typeof rawState === 'object') {
                 state = rawState.display_value || rawState.actual_value || "";
@@ -135,16 +134,12 @@
             const street = rawStreet || '';
             const city = rawCity || '';
             const zip = rawZip || '';
-
-            // 4. Construct Address
             const fullAddress = `${street}, ${city}, ${state} ${zip}`;
-            console.log("Constructed Address for Geocoding: " + fullAddress);
 
-            // 5. Validate
-            // We allow shorter addresses if at least Zip is present, but generally look for length
-            if (fullAddress.length < 5) {
-                console.error("Address is too short/empty.");
-                document.getElementById('loading').innerHTML = "Claimant Address Incomplete in Record.";
+            // 4. VALIDATE & FALLBACK LOGIC
+            if (fullAddress.length < 10) {
+                console.error("Address Incomplete. Using Fallback.");
+                useFallbackLocation("Claimant Address Incomplete/Empty.");
                 return;
             }
 
@@ -162,27 +157,39 @@
                         title: "Claimant"
                     });
 
-                    // Add Radius Circle
-                    new google.maps.Circle({
-                        strokeColor: "#0000FF", strokeOpacity: 0.3, strokeWeight: 1,
-                        fillColor: "#0000FF", fillOpacity: 0.05,
-                        map, center: patientLocation,
-                        radius: currentRadius * 1609.34
-                    });
-
+                    // Proceed to Providers
                     fetchProviders();
                 } else {
                     console.error("Geocode failed: " + status);
-                    document.getElementById('loading').innerHTML = "Geocoding Failed: " + status;
+                    useFallbackLocation("Geocoding Failed: " + status);
                 }
             });
+        }
+
+        function useFallbackLocation(reason) {
+            console.warn("Using Fallback Location (Venice, FL). Reason: " + reason);
+            
+            // Set "Patient" location to Venice HQ for calculation purposes
+            patientLocation = new google.maps.LatLng(FALLBACK_LAT, FALLBACK_LNG);
+            
+            map.setCenter(patientLocation);
+            map.setZoom(9);
+            
+            // Mark the Fallback Center differently (Grey) so you know it's not the patient
+            new google.maps.Marker({
+                map: map, position: patientLocation,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 8, fillColor: 'gray', fillOpacity: 0.5, strokeColor: 'black', strokeWeight: 1 },
+                title: "Default Center (Venice, FL) - " + reason
+            });
+
+            // Proceed to Providers anyway!
+            fetchProviders();
         }
 
         async function fetchProviders() {
             document.getElementById('loading').innerHTML = "Fetching Providers...";
             
             try {
-                // Fetch Active Providers
                 const response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 100});
                 if(response.data){
                     console.log("Providers Fetched: " + response.data.length);
@@ -203,8 +210,6 @@
                 
                 // FILTER: Only Active Providers
                 const status = provider.Provider_Contract_Status || ''; 
-                
-                // Simple check for "Active" or "Contract" in status
                 if(!status.includes('Active') && !status.includes('Contract') && !status.includes('SCA')) continue;
 
                 // STRATEGY 1: Use Stored Coordinates (Fast)
@@ -220,7 +225,7 @@
                     const pState = provider.Provider_Address_State || '';
                     const pZip = provider.Provider_Address_Zip || '';
                     
-                    // Safe unwrap for Provider State as well
+                    // Safe unwrap for Provider State
                     let pStateText = "";
                     if (pState && typeof pState === 'object') {
                         pStateText = pState.display_value || "";
@@ -231,9 +236,8 @@
                     const pAddress = `${pStreet}, ${pCity}, ${pStateText} ${pZip}`;
 
                     if(pAddress.length > 10) {
-                        // THROTTLE: Wait 300ms between requests to avoid 'OVER_QUERY_LIMIT'
+                        // THROTTLE
                         await new Promise(r => setTimeout(r, 300)); 
-                        
                         geocoder.geocode({ 'address': pAddress }, function(results, status) {
                             if (status === 'OK') {
                                 checkAndPlot(results[0].geometry.location, provider);
@@ -243,6 +247,7 @@
                 }
             }
             document.getElementById('loading').style.display = 'none';
+            console.log("Total Providers Plotted: " + plottedCount);
         }
 
         function checkAndPlot(pos, provider) {
@@ -250,7 +255,10 @@
             const distanceMeters = google.maps.geometry.spherical.computeDistanceBetween(patientLocation, pos);
             const distanceMiles = distanceMeters * 0.000621371;
 
-            if(distanceMiles <= currentRadius) {
+            // Show if within radius OR if we are using fallback (show everything under 200 miles)
+            const limit = (patientLocation.lat() === FALLBACK_LAT) ? 200 : currentRadius;
+
+            if(distanceMiles <= limit) {
                 const color = SERVICE_COLORS[provider.Service_Type] || 'gray';
                 
                 const marker = new google.maps.Marker({
@@ -281,7 +289,7 @@
                 Entity: "Referrals",
                 APIData: {
                     "id": currentReferral.id,
-                    "Provider": id, // Make sure this matches your Lookup Field API Name in Referrals
+                    "Provider": id, 
                     "Status": "Vendor Assigned"
                 }
             }).then(data => {
