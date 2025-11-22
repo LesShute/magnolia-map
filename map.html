@@ -1,260 +1,69 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Find Nearby Providers</title>
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCWYDQ2ruxrrYSKZpwVUkI2uhSRjgb-6uU&libraries=geometry"></script>
-    
+    <title>Diagnostic Mode</title>
     <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
-    
-    <style>
-        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
-        #map { height: 500px; width: 100%; }
-        #loading {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            font-size: 16px; color: #333; background: white; padding: 20px;
-            border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); z-index: 1000;
-        }
-        .assign-btn {
-            background-color: #0066cc; color: white; border: none; padding: 8px 12px;
-            border-radius: 4px; cursor: pointer; font-size: 12px; margin-top: 8px; width: 100%;
-        }
-        .assign-btn:hover { background-color: #0052a3; }
-    </style>
+    <style>body { font-family: monospace; padding: 20px; }</style>
 </head>
 <body>
-    <div id="loading">Initializing Connection...</div>
-    <div id="map"></div>
+    <h2>Data Connection Diagnostic</h2>
+    <div id="status">Initializing...</div>
+    <hr>
+    <pre id="output">Waiting for Zoho Handshake...</pre>
 
     <script>
-        // ** CONFIGURATION **
-        const SERVICE_COLORS = {
-            'DME': '#FF0000', 
-            'Direct PT': '#4169E1', 
-            'Contracted PT': '#4169E1',
-            'Physical Therapy': '#4169E1', 
-            'Home Health': '#00AA00', 
-            'Diagnostic Imaging': '#FFD700', 
-            'Field Nurse CM': '#800080'
-        };
-
-        // Global State
-        let map, patientLocation = null;
-        let currentReferral = {};
-        let geocoder; 
-        let bounds; 
-
-        // ---------------------------------------------------------
-        // ** STEP 1: Start Listening **
-        // ---------------------------------------------------------
-        console.log("1. Script Started - Setting up Listeners...");
-
         ZOHO.embeddedApp.on("PageLoad", function(data){
-            console.log("3. PageLoad Event Received!", data);
-            if(data && data.EntityId){
-                loadReferralData(data.EntityId);
-            }
+            // Just listening
         });
 
-        // ---------------------------------------------------------
-        // ** STEP 2: Initialize Connection **
-        // ---------------------------------------------------------
-        console.log("2. Attempting Zoho Init...");
-        
         ZOHO.embeddedApp.init().then(function(){
-            console.log("4. Zoho Init Complete");
-            document.getElementById('loading').innerHTML = "Loading Referral Data...";
-        }).catch(function(err){
-             console.error("Zoho Init Failed:", err);
-             document.getElementById('loading').innerHTML = "Connection Failed. Check Console.";
+            document.getElementById('status').innerHTML = "Handshake Successful. Querying Database...";
+            runDiagnostics();
         });
 
-        // ---------------------------------------------------------
-        // ** CORE FUNCTIONS **
-        // ---------------------------------------------------------
-
-        async function loadReferralData(recordId) {
+        async function runDiagnostics() {
+            const logArea = document.getElementById('output');
+            
+            // TEST 1: Try "Providers" (Custom Module Name)
             try {
-                const response = await ZOHO.CRM.API.getRecord({Entity: "Referrals", RecordID: recordId});
-                if(response.data && response.data.length > 0){
-                    currentReferral = response.data[0];
-                    initMap();
+                logArea.innerText += "\nAttempting fetch: Entity = 'Providers'...";
+                const response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 1});
+                
+                if(response.data) {
+                    alert("SUCCESS! Found module 'Providers'.\n\nFirst Record Name: " + response.data[0].Name + "\n\nCheck the screen for API Keys.");
+                    
+                    // PRINT THE RAW KEYS so we see the Real API Names
+                    logArea.innerText += "\n\n[SUCCESS] Module 'Providers' exists.";
+                    logArea.innerText += "\n\n=== RAW DATA KEYS (First Record) ===";
+                    logArea.innerText += "\n" + JSON.stringify(response.data[0], null, 4);
+                    return; // Stop if successful
+                } else {
+                    logArea.innerText += "\n[FAILURE] Module 'Providers' returned no data (or is invalid).";
                 }
             } catch (e) {
-                console.error("Error fetching record:", e);
-                document.getElementById('loading').innerHTML = "Error loading data: " + e.message;
-            }
-        }
-
-        function initMap() {
-            geocoder = new google.maps.Geocoder();
-            bounds = new google.maps.LatLngBounds(); // Initialize Bounds
-
-            map = new google.maps.Map(document.getElementById('map'), {
-                center: { lat: 27.09978, lng: -82.45426 }, // Default to Venice, FL
-                zoom: 7,
-                mapTypeControl: false, streetViewControl: false
-            });
-
-            plotPatientLocation();
-        }
-
-        function plotPatientLocation() {
-            // 1. Extract Raw Values (Using confirmed API Names)
-            let rawStreet = currentReferral.Claimant_Address_Street_1;
-            let rawCity = currentReferral.Claimant_Address_City;
-            let rawState = currentReferral.Claimant_Address_State;
-            let rawZip = currentReferral.Claimant_Address_Zip;
-
-            // 2. Picklist Unwrap
-            let state = "";
-            if (rawState && typeof rawState === 'object') {
-                state = rawState.display_value || rawState.actual_value || "";
-            } else {
-                state = rawState || "";
-            }
-            
-            const street = rawStreet || '';
-            const city = rawCity || '';
-            const zip = rawZip || '';
-            const fullAddress = `${street}, ${city}, ${state} ${zip}`;
-
-            console.log("Geocoding Patient: " + fullAddress);
-
-            if (fullAddress.length < 10) {
-                console.warn("Patient Address incomplete. Using Fallback Center.");
-                // Center on Venice FL and Proceed
-                map.setCenter({lat: 27.09978, lng: -82.45426});
-                map.setZoom(8);
-                fetchProviders(); // Get Providers anyway!
-                return;
+                logArea.innerText += "\n[ERROR] 'Providers' query failed: " + JSON.stringify(e);
             }
 
-            document.getElementById('loading').innerHTML = "Locating Claimant...";
-            
-            geocoder.geocode({ 'address': fullAddress }, function(results, status) {
-                if (status === 'OK') {
-                    patientLocation = results[0].geometry.location;
-                    
-                    new google.maps.Marker({
-                        map: map, position: patientLocation,
-                        icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: 'blue', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
-                        title: "Claimant"
-                    });
-
-                    bounds.extend(patientLocation);
-                    map.fitBounds(bounds);
-                    fetchProviders();
-                } else {
-                    console.error("Geocode failed: " + status);
-                    fetchProviders(); // Proceed even if patient fails
-                }
-            });
-        }
-
-        async function fetchProviders() {
-            document.getElementById('loading').innerHTML = "Fetching Providers...";
-            
-            // STRATEGY: Try 'Providers' first. If 0, try 'Vendors'.
+            // TEST 2: Try "Vendors" (Standard Module Name)
             try {
-                let response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 100});
+                logArea.innerText += "\n\nAttempting fetch: Entity = 'Vendors'...";
+                const responseV = await ZOHO.CRM.API.getAllRecords({Entity: "Vendors", sort_order:"asc", per_page: 1});
                 
-                // If 'Providers' returned nothing or failed, try 'Vendors' (Standard Module Name)
-                if(!response.data) {
-                    console.warn("'Providers' module returned no data. Trying 'Vendors'...");
-                    response = await ZOHO.CRM.API.getAllRecords({Entity: "Vendors", sort_order:"asc", per_page: 100});
-                }
-
-                if(response.data){
-                    console.log("Providers Fetched: " + response.data.length);
-                    
-                    // DEBUG: Print the first provider to see API Names
-                    if(response.data.length > 0) {
-                        console.log("SAMPLE PROVIDER DATA:", response.data[0]);
-                    }
-
-                    processProviders(response.data);
+                if(responseV.data) {
+                    alert("SUCCESS! Found module 'Vendors'.\n\n(You likely renamed the standard Vendors module to Providers).");
+                    logArea.innerText += "\n\n[SUCCESS] Module 'Vendors' exists.";
+                    logArea.innerText += "\n\n=== RAW DATA KEYS (First Record) ===";
+                    logArea.innerText += "\n" + JSON.stringify(responseV.data[0], null, 4);
                 } else {
-                     console.error("No Provider records found in 'Providers' or 'Vendors'.");
-                     document.getElementById('loading').innerHTML = "No Providers Found.";
+                    logArea.innerText += "\n[FAILURE] Module 'Vendors' returned no data.";
                 }
             } catch (e) {
-                 console.error("Error fetching providers:", e);
-                 document.getElementById('loading').innerHTML = "API Error (Check Console)";
-            }
-        }
-
-        function processProviders(providers) {
-            let plottedCount = 0;
-
-            for (let i = 0; i < providers.length; i++) {
-                const provider = providers[i];
-                
-                // 1. LAT/LONG CHECK (Using Confirmed API Names)
-                if (provider.Provider_Latitude && provider.Provider_Longitude) {
-                    
-                    const lat = parseFloat(provider.Provider_Latitude);
-                    const lng = parseFloat(provider.Provider_Longitude);
-                    
-                    if(!isNaN(lat) && !isNaN(lng)) {
-                        const pos = new google.maps.LatLng(lat, lng);
-                        plotProviderPin(pos, provider);
-                        plottedCount++;
-                    }
-                } 
+                logArea.innerText += "\n[ERROR] 'Vendors' query failed: " + JSON.stringify(e);
             }
             
-            document.getElementById('loading').style.display = 'none';
-            console.log("Total Pins Plotted: " + plottedCount);
-            
-            if(plottedCount > 0) {
-                map.fitBounds(bounds);
-            } else {
-                // If no pins, log why
-                console.warn("0 Pins plotted. Check if Provider_Latitude/Longitude contains data.");
-            }
-        }
-
-        function plotProviderPin(pos, provider) {
-            // Use CORRECT API Name for Service Type
-            const serviceType = provider.Provider_Service_Type || 'Default';
-            const color = SERVICE_COLORS[serviceType] || 'gray';
-            
-            const marker = new google.maps.Marker({
-                map: map, position: pos,
-                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 },
-                title: provider.Name
-            });
-
-            // Add to Bounds
-            bounds.extend(pos);
-
-            const infoWindow = new google.maps.InfoWindow({
-                content: `
-                    <div style="padding:5px; width:200px; font-family:Arial;">
-                        <strong>${provider.Name}</strong><br>
-                        <span style="color:#666; font-size:12px;">${serviceType}</span><br>
-                        <button class="assign-btn" onclick="assignProvider('${provider.id}', '${provider.Name}')">Assign Provider</button>
-                    </div>
-                `
-            });
-
-            marker.addListener('click', () => {
-                infoWindow.open(map, marker);
-            });
-        }
-
-        function assignProvider(id, name) {
-            ZOHO.CRM.API.updateRecord({
-                Entity: "Referrals",
-                APIData: {
-                    "id": currentReferral.id,
-                    "Provider": id, 
-                    "Status": "Vendor Assigned"
-                }
-            }).then(data => {
-                alert(name + " assigned successfully.");
-                location.reload();
-            });
+            // TEST 3: Try "CustomModule1" (Common Default)
+            // Sometimes custom modules get generic API names
+            logArea.innerText += "\n\n(If both failed, check Setup > APIs > API Names for the 'Providers' module)";
         }
     </script>
 </body>
