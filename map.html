@@ -41,7 +41,7 @@
         let map, patientLocation = null;
         let currentReferral = {};
         let geocoder; 
-        let bounds; // For Auto-Zoom
+        let bounds; 
 
         // ---------------------------------------------------------
         // ** STEP 1: Start Listening **
@@ -90,8 +90,8 @@
             bounds = new google.maps.LatLngBounds(); // Initialize Bounds
 
             map = new google.maps.Map(document.getElementById('map'), {
-                center: { lat: 37.0902, lng: -95.7129 }, 
-                zoom: 4,
+                center: { lat: 27.09978, lng: -82.45426 }, // Default to Venice, FL
+                zoom: 7,
                 mapTypeControl: false, streetViewControl: false
             });
 
@@ -99,13 +99,13 @@
         }
 
         function plotPatientLocation() {
-            // 1. Extract Raw Values
+            // 1. Extract Raw Values (Using confirmed API Names)
             let rawStreet = currentReferral.Claimant_Address_Street_1;
             let rawCity = currentReferral.Claimant_Address_City;
             let rawState = currentReferral.Claimant_Address_State;
             let rawZip = currentReferral.Claimant_Address_Zip;
 
-            // 2. SAFE UNWRAP (State Picklist Fix)
+            // 2. Picklist Unwrap
             let state = "";
             if (rawState && typeof rawState === 'object') {
                 state = rawState.display_value || rawState.actual_value || "";
@@ -121,11 +121,11 @@
             console.log("Geocoding Patient: " + fullAddress);
 
             if (fullAddress.length < 10) {
-                console.warn("Address too short. Using Default Center.");
-                // Even if patient fails, we load map to show providers (if any)
-                map.setCenter({lat: 27.09978, lng: -82.45426}); // Venice FL default
+                console.warn("Patient Address incomplete. Using Fallback Center.");
+                // Center on Venice FL and Proceed
+                map.setCenter({lat: 27.09978, lng: -82.45426});
                 map.setZoom(8);
-                fetchProviders();
+                fetchProviders(); // Get Providers anyway!
                 return;
             }
 
@@ -135,21 +135,17 @@
                 if (status === 'OK') {
                     patientLocation = results[0].geometry.location;
                     
-                    // Plot Patient
                     new google.maps.Marker({
                         map: map, position: patientLocation,
                         icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: 'blue', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
                         title: "Claimant"
                     });
 
-                    // Add Patient to Bounds so we don't lose them
                     bounds.extend(patientLocation);
                     map.fitBounds(bounds);
-
                     fetchProviders();
                 } else {
                     console.error("Geocode failed: " + status);
-                    document.getElementById('loading').innerHTML = "Patient Geocode Failed. Fetching Providers anyway...";
                     fetchProviders(); // Proceed even if patient fails
                 }
             });
@@ -158,17 +154,32 @@
         async function fetchProviders() {
             document.getElementById('loading').innerHTML = "Fetching Providers...";
             
+            // STRATEGY: Try 'Providers' first. If 0, try 'Vendors'.
             try {
-                // Fetch Providers (increased limit to 200 to ensure we catch test data)
-                const response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 200});
+                let response = await ZOHO.CRM.API.getAllRecords({Entity: "Providers", sort_order:"asc", per_page: 100});
+                
+                // If 'Providers' returned nothing or failed, try 'Vendors' (Standard Module Name)
+                if(!response.data) {
+                    console.warn("'Providers' module returned no data. Trying 'Vendors'...");
+                    response = await ZOHO.CRM.API.getAllRecords({Entity: "Vendors", sort_order:"asc", per_page: 100});
+                }
+
                 if(response.data){
-                    console.log("Providers Fetched from CRM: " + response.data.length);
+                    console.log("Providers Fetched: " + response.data.length);
+                    
+                    // DEBUG: Print the first provider to see API Names
+                    if(response.data.length > 0) {
+                        console.log("SAMPLE PROVIDER DATA:", response.data[0]);
+                    }
+
                     processProviders(response.data);
                 } else {
-                     document.getElementById('loading').style.display = 'none';
+                     console.error("No Provider records found in 'Providers' or 'Vendors'.");
+                     document.getElementById('loading').innerHTML = "No Providers Found.";
                 }
             } catch (e) {
                  console.error("Error fetching providers:", e);
+                 document.getElementById('loading').innerHTML = "API Error (Check Console)";
             }
         }
 
@@ -178,17 +189,12 @@
             for (let i = 0; i < providers.length; i++) {
                 const provider = providers[i];
                 
-                // 1. FILTER REMOVED: We ignore Status now.
-                // const status = provider.Provider_Contract_Status || ''; 
-                
-                // 2. LAT/LONG CHECK ONLY
-                // We strictly ignore addresses. Only plot if coords exist.
+                // 1. LAT/LONG CHECK (Using Confirmed API Names)
                 if (provider.Provider_Latitude && provider.Provider_Longitude) {
                     
                     const lat = parseFloat(provider.Provider_Latitude);
                     const lng = parseFloat(provider.Provider_Longitude);
                     
-                    // Basic sanity check for valid coords
                     if(!isNaN(lat) && !isNaN(lng)) {
                         const pos = new google.maps.LatLng(lat, lng);
                         plotProviderPin(pos, provider);
@@ -200,14 +206,18 @@
             document.getElementById('loading').style.display = 'none';
             console.log("Total Pins Plotted: " + plottedCount);
             
-            // Final Zoom Adjust
             if(plottedCount > 0) {
                 map.fitBounds(bounds);
+            } else {
+                // If no pins, log why
+                console.warn("0 Pins plotted. Check if Provider_Latitude/Longitude contains data.");
             }
         }
 
         function plotProviderPin(pos, provider) {
-            const color = SERVICE_COLORS[provider.Service_Type] || 'gray';
+            // Use CORRECT API Name for Service Type
+            const serviceType = provider.Provider_Service_Type || 'Default';
+            const color = SERVICE_COLORS[serviceType] || 'gray';
             
             const marker = new google.maps.Marker({
                 map: map, position: pos,
@@ -215,14 +225,14 @@
                 title: provider.Name
             });
 
-            // Add to Bounds (Auto-Zoom)
+            // Add to Bounds
             bounds.extend(pos);
 
             const infoWindow = new google.maps.InfoWindow({
                 content: `
                     <div style="padding:5px; width:200px; font-family:Arial;">
                         <strong>${provider.Name}</strong><br>
-                        <span style="color:#666; font-size:12px;">${provider.Service_Type}</span><br>
+                        <span style="color:#666; font-size:12px;">${serviceType}</span><br>
                         <button class="assign-btn" onclick="assignProvider('${provider.id}', '${provider.Name}')">Assign Provider</button>
                     </div>
                 `
