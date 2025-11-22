@@ -9,31 +9,20 @@
     <style>
         body { margin: 0; padding: 0; font-family: 'Segoe UI', Arial, sans-serif; }
         
-        /* ROUTING PANEL STYLES */
         #routing-panel {
-            background: white;
-            padding: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            border-bottom: 1px solid #ddd;
-            z-index: 100;
-            position: relative;
+            background: white; padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            display: flex; align-items: center; gap: 15px; border-bottom: 1px solid #ddd;
+            z-index: 100; position: relative;
         }
-        
         .input-group { display: flex; flex-direction: column; flex: 1; }
         .input-group label { font-size: 11px; font-weight: bold; color: #666; margin-bottom: 4px; text-transform: uppercase; }
         .input-group input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; background: #f9f9f9; }
-        
         #map { height: calc(100vh - 80px); width: 100%; }
         
-        /* LOADING OVERLAY */
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             font-size: 14px; color: #333; background: white; padding: 20px;
-            border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000;
-            text-align: center;
+            border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000; text-align: center;
         }
 
         /* POPUP STYLES */
@@ -42,16 +31,9 @@
         .popup-detail { font-size: 13px; color: #555; margin-bottom: 3px; }
         .popup-tag { display: inline-block; padding: 2px 6px; background: #e1f5fe; color: #0277bd; border-radius: 4px; font-size: 11px; margin-bottom: 8px; }
         
-        .btn-select {
-            background-color: #28a745; color: white; border: none; padding: 8px;
-            border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%; margin-top: 5px;
-        }
+        .btn-select { background-color: #28a745; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%; margin-top: 5px; }
         .btn-select:hover { background-color: #218838; }
-
-        .btn-assign {
-            background-color: #007bff; color: white; border: none; padding: 8px;
-            border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%; margin-top: 5px;
-        }
+        .btn-assign { background-color: #007bff; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%; margin-top: 5px; }
         .btn-assign:hover { background-color: #0069d9; }
     </style>
 </head>
@@ -73,51 +55,22 @@
     <div id="map"></div>
 
     <script>
-        // ** CONFIGURATION **
         const SEARCH_RADIUS_LIMIT = 100; // Miles
-        
-        const SERVICE_COLORS = {
-            'DME': '#FF0000', 
-            'Direct PT': '#4169E1', 
-            'Contracted PT': '#4169E1',
-            'Physical Therapy': '#4169E1', 
-            'Home Health': '#00AA00', 
-            'Diagnostic Imaging': '#FFD700', 
-            'Field Nurse CM': '#800080'
-        };
+        const SERVICE_COLORS = { 'DME': '#FF0000', 'Direct PT': '#4169E1', 'Contracted PT': '#4169E1', 'Physical Therapy': '#4169E1', 'Home Health': '#00AA00', 'Diagnostic Imaging': '#FFD700', 'Field Nurse CM': '#800080' };
 
-        // Global State
-        let map, patientLocation = null;
-        let currentReferral = {};
-        let geocoder; 
-        let bounds; 
-        let allProvidersList = [];
+        let map, patientLocation, currentReferral = {}, geocoder, bounds;
 
-        // ---------------------------------------------------------
-        // ** STEP 1: Start Listening **
-        // ---------------------------------------------------------
         console.log("1. Script Started...");
 
         ZOHO.embeddedApp.on("PageLoad", function(data){
-            console.log("3. PageLoad Received", data);
-            if(data && data.EntityId){
-                loadReferralData(data.EntityId);
-            }
+            if(data && data.EntityId) loadReferralData(data.EntityId);
         });
 
-        // ---------------------------------------------------------
-        // ** STEP 2: Initialize **
-        // ---------------------------------------------------------
         console.log("2. Init Zoho...");
-        
         ZOHO.embeddedApp.init().then(function(){
             console.log("4. Zoho Init Complete");
             document.getElementById('loading').innerHTML = "Loading Referral Data...";
         });
-
-        // ---------------------------------------------------------
-        // ** CORE LOGIC **
-        // ---------------------------------------------------------
 
         async function loadReferralData(recordId) {
             try {
@@ -135,126 +88,120 @@
         function initMap() {
             geocoder = new google.maps.Geocoder();
             bounds = new google.maps.LatLngBounds(); 
-
-            map = new google.maps.Map(document.getElementById('map'), {
-                center: { lat: 27.09978, lng: -82.45426 }, 
-                zoom: 7,
-                mapTypeControl: false, streetViewControl: false
-            });
-
+            map = new google.maps.Map(document.getElementById('map'), { center: { lat: 27.099, lng: -82.454 }, zoom: 7 });
             plotPatientLocation();
         }
 
         function plotPatientLocation() {
-            // 1. Extract Raw Values (USING CORRECTED NAMES)
-            let rawStreet = currentReferral.Claimant_Address_Street_1;
-            let rawCity   = currentReferral.Claimant_City;         // Validated Name
-            let rawState  = currentReferral.Claimant_Address_State; // Validated Name
-            let rawZip    = currentReferral.Claimant_Address_Zip;
+            // 1. CASCADE CHECK FOR STREET (Try all common variations)
+            let rawStreet = currentReferral.Claimant_Address_Street_1 || 
+                            currentReferral.Claimant_Address_Street || 
+                            currentReferral.Street || 
+                            currentReferral.Mailing_Street || 
+                            "";
+
+            let rawCity   = currentReferral.Claimant_City || "";
+            let rawZip    = currentReferral.Claimant_Address_Zip || "";
             
-            // 2. Picklist Unwrap (The Safety Net)
-            let state = "";
-            if (rawState && typeof rawState === 'object') {
-                state = rawState.display_value || rawState.actual_value || "";
+            // Safe State Unwrap
+            let rawStateVal = currentReferral.Claimant_Address_State;
+            let rawState = (rawStateVal && typeof rawStateVal === 'object') ? rawStateVal.display_value : (rawStateVal || "");
+
+            // 2. CONSTRUCT ADDRESSES
+            const fullAddress = `${rawStreet}, ${rawCity}, ${rawState} ${rawZip}`.trim();
+            const fallbackAddress = `${rawCity}, ${rawState} ${rawZip}`.trim();
+
+            // UPDATE UI
+            if(rawStreet) {
+                document.getElementById('fromAddress').value = fullAddress;
             } else {
-                state = rawState || "";
+                document.getElementById('fromAddress').value = fallbackAddress + " (Street Missing)";
             }
-            
-            const street = rawStreet || '';
-            const city = rawCity || '';
-            const zip = rawZip || '';
 
-            const fullAddress = `${street}, ${city}, ${state} ${zip}`;
-            
-            // UPDATE UI "FROM" FIELD
-            document.getElementById('fromAddress').value = fullAddress;
+            // 3. LOGIC: TRY FULL -> FAIL -> TRY CITY -> FAIL -> DEFAULT
+            if (fullAddress.length > 10 && rawStreet.length > 0) {
+                // TRY 1: Full Address
+                console.log("Attempting Full Address: " + fullAddress);
+                geocoder.geocode({ 'address': fullAddress }, function(results, status) {
+                    if (status === 'OK') {
+                        plotAndFinish(results[0].geometry.location);
+                    } else {
+                        console.warn("Full Address Failed (" + status + "). Retrying Fallback...");
+                        tryFallback(fallbackAddress);
+                    }
+                });
+            } else {
+                console.warn("Street empty or too short. Skipping to Fallback.");
+                tryFallback(fallbackAddress);
+            }
+        }
 
-            console.log("Geocoding Patient: " + fullAddress);
-
-            if (fullAddress.length < 10) {
-                document.getElementById('fromAddress').value = "Invalid/Missing Address: " + fullAddress;
-                
-                // Fallback: Center on Venice, FL
-                map.setCenter({lat: 27.09978, lng: -82.45426});
-                map.setZoom(8);
-                
-                // Fetch Providers anyway
-                fetchAllProviders(); 
+        function tryFallback(address) {
+            if(address.length < 5) {
+                console.error("Fallback Address too short.");
+                useDefaultCenter();
                 return;
             }
-
-            document.getElementById('loading').innerHTML = "Locating Claimant...";
             
-            geocoder.geocode({ 'address': fullAddress }, function(results, status) {
+            console.log("Attempting Fallback: " + address);
+            geocoder.geocode({ 'address': address }, function(results, status) {
                 if (status === 'OK') {
-                    patientLocation = results[0].geometry.location;
-                    
-                    new google.maps.Marker({
-                        map: map, position: patientLocation,
-                        icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#007bff', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
-                        title: "Claimant"
-                    });
-
-                    bounds.extend(patientLocation);
-                    map.fitBounds(bounds);
-                    
-                    // Draw 100 Mile Circle
-                    new google.maps.Circle({
-                        strokeColor: "#007bff", strokeOpacity: 0.3, strokeWeight: 1,
-                        fillColor: "#007bff", fillOpacity: 0.05,
-                        map, center: patientLocation,
-                        radius: SEARCH_RADIUS_LIMIT * 1609.34
-                    });
-
-                    fetchAllProviders();
+                    plotAndFinish(results[0].geometry.location);
                 } else {
-                    console.error("Geocode failed: " + status);
-                    document.getElementById('fromAddress').value = "Address Not Found by Google";
-                    fetchAllProviders(); 
+                    console.error("Fallback Failed: " + status);
+                    useDefaultCenter();
                 }
             });
         }
 
+        function useDefaultCenter() {
+            document.getElementById('fromAddress').value += " [Not Found]";
+            map.setCenter({lat: 27.09978, lng: -82.45426});
+            map.setZoom(8);
+            fetchAllProviders();
+        }
+
+        function plotAndFinish(location) {
+            patientLocation = location;
+            new google.maps.Marker({
+                map: map, position: patientLocation,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#007bff', fillOpacity: 1, strokeColor: 'white', strokeWeight: 2 },
+                title: "Claimant"
+            });
+            bounds.extend(patientLocation);
+            map.fitBounds(bounds);
+            
+            // 100 Mile Circle
+            new google.maps.Circle({
+                strokeColor: "#007bff", strokeOpacity: 0.3, strokeWeight: 1, fillColor: "#007bff", fillOpacity: 0.05,
+                map, center: patientLocation, radius: SEARCH_RADIUS_LIMIT * 1609.34
+            });
+
+            fetchAllProviders();
+        }
+
         async function fetchAllProviders() {
             document.getElementById('loading').innerHTML = "Fetching Providers (Page 1)...";
-            
             let allRecords = [];
             let page = 1;
             let hasMore = true;
 
             try {
                 while(hasMore) {
-                    console.log("Fetching Page " + page + "...");
-                    
                     // USING 'Sole_Clinicians'
-                    let response = await ZOHO.CRM.API.getAllRecords({
-                        Entity: "Sole_Clinicians", 
-                        sort_order: "asc", 
-                        per_page: 200, 
-                        page: page
-                    });
+                    let response = await ZOHO.CRM.API.getAllRecords({ Entity: "Sole_Clinicians", sort_order: "asc", per_page: 200, page: page });
 
                     if(response.data && response.data.length > 0){
                         allRecords = allRecords.concat(response.data);
                         document.getElementById('loading').innerHTML = "Fetched " + allRecords.length + " Providers...";
-                        
-                        if(response.data.length < 200) { hasMore = false; } 
-                        else { page++; }
-                        
-                        // Safety Cap
+                        if(response.data.length < 200) { hasMore = false; } else { page++; }
                         if(allRecords.length >= 3000) { hasMore = false; }
-
                     } else {
                         hasMore = false;
                     }
                 }
-
-                if(allRecords.length > 0) {
-                    console.log("Total Providers: " + allRecords.length);
-                    processProviders(allRecords);
-                } else {
-                    document.getElementById('loading').innerHTML = "No Providers Found.";
-                }
+                if(allRecords.length > 0) processProviders(allRecords);
+                else document.getElementById('loading').innerHTML = "No Providers Found.";
 
             } catch (e) {
                  console.error(e);
@@ -264,41 +211,32 @@
 
         function processProviders(providers) {
             let plottedCount = 0;
-
             for (let i = 0; i < providers.length; i++) {
                 const provider = providers[i];
-                
                 if (provider.Provider_Latitude && provider.Provider_Longitude) {
                     const lat = parseFloat(provider.Provider_Latitude);
                     const lng = parseFloat(provider.Provider_Longitude);
-                    
                     if(!isNaN(lat) && !isNaN(lng)) {
                         const pos = new google.maps.LatLng(lat, lng);
                         
-                        // ** FILTER LOGIC: 100 MILE RADIUS **
                         if(patientLocation) {
                             const distMeters = google.maps.geometry.spherical.computeDistanceBetween(patientLocation, pos);
                             const distMiles = distMeters * 0.000621371;
-                            
                             if(distMiles <= SEARCH_RADIUS_LIMIT) {
                                 plotProviderPin(pos, provider, distMiles);
                                 plottedCount++;
                             }
                         } else {
-                            // Fallback: If no patient location, show everything
                             plotProviderPin(pos, provider, 0);
                             plottedCount++;
                         }
                     }
                 } 
             }
-            
             document.getElementById('loading').style.display = 'none';
-            
-            if(plottedCount > 0) {
-                map.fitBounds(bounds);
-            } else {
-                document.getElementById('loading').innerHTML = "No providers found within 100 miles.";
+            if(plottedCount > 0) map.fitBounds(bounds);
+            else {
+                document.getElementById('loading').innerHTML = "No providers within 100 miles.";
                 document.getElementById('loading').style.display = 'block';
             }
         }
@@ -307,12 +245,11 @@
             const serviceType = provider.Provider_Service_Type || 'General';
             const color = SERVICE_COLORS[serviceType] || 'gray';
             
-            // Build Address String (Safe Checks)
+            // Address Build
             const street = provider.Provider_Address_Street_1 || '';
             const city = provider.Provider_Address_City || '';
             const pStateRaw = provider.Provider_Address_State;
             let pState = (pStateRaw && typeof pStateRaw === 'object') ? pStateRaw.display_value : (pStateRaw || '');
-            
             const fullAddress = `${street}, ${city}, ${pState}`;
             const phone = provider.Provider_Phone || 'N/A';
 
@@ -321,10 +258,8 @@
                 icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.8, strokeColor: 'white', strokeWeight: 1 },
                 title: provider.Name
             });
-
             bounds.extend(pos);
 
-            // ** RICH POPUP CONTENT **
             const contentString = `
                 <div class="popup-content">
                     <div class="popup-title">${provider.Name}</div>
@@ -337,34 +272,17 @@
                     <button class="btn-assign" onclick="assignProvider('${provider.id}', '${provider.Name.replace(/'/g, "\\'")}')">Assign to Referral</button>
                 </div>
             `;
-
-            const infoWindow = new google.maps.InfoWindow({
-                content: contentString
-            });
-
-            marker.addListener('click', () => {
-                infoWindow.open(map, marker);
-            });
+            const infoWindow = new google.maps.InfoWindow({ content: contentString });
+            marker.addListener('click', () => { infoWindow.open(map, marker); });
         }
 
-        // ** UI FUNCTIONS **
-        window.selectProvider = function(address) {
-            document.getElementById('toAddress').value = address;
-        };
-
+        window.selectProvider = function(address) { document.getElementById('toAddress').value = address; };
         window.assignProvider = function(id, name) {
             if(confirm("Confirm assignment of " + name + "?")) {
                 ZOHO.CRM.API.updateRecord({
                     Entity: "Referrals",
-                    APIData: {
-                        "id": currentReferral.id,
-                        "Provider": id, 
-                        "Status": "Vendor Assigned"
-                    }
-                }).then(data => {
-                    alert("Assigned Successfully!");
-                    location.reload();
-                });
+                    APIData: { "id": currentReferral.id, "Provider": id, "Status": "Vendor Assigned" }
+                }).then(data => { alert("Assigned Successfully!"); location.reload(); });
             }
         };
     </script>
